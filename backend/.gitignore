@@ -1,0 +1,8 @@
+__pycache__/
+.env
+alembic/versions/
+static/media/
+static/ai_buddy/
+*.log
+celerybeat-schedule.*
+tests/

@@ -1,0 +1,15 @@
+[plugin]
+icon = "lucide:panels-top-left"
+summary = "外部页面"
+version = "1.0.0"
+description = "管理多级外部页面分类，支持内嵌、外链和分类按钮导航"
+author = "xiang"
+tags = ["other"]
+database = ["mysql", "postgresql"]
+
+[app]
+extend = "admin"
+
+[api.external_links]
+prefix = "/external-links"
+tags = "外部页面"

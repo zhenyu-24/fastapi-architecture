@@ -1,0 +1,91 @@
+# OpenSandbox Server 参考配置
+# 目标版本：OpenSandbox Server 1.2.0
+# 放置位置：WSL/Linux 用户主目录 ~/.sandbox.toml
+# 官方参考：https://github.com/opensandbox-group/OpenSandbox/blob/main/server/configuration.md
+
+[server]
+# Server 监听地址。Windows + WSL2 本机联调可使用 127.0.0.1。
+host = "127.0.0.1"
+# Server API 端口，需与 fba 的 OPEN_SANDBOX_URL 一致。
+port = 8080
+# 推荐设置 API Key，fba 通过 OPEN-SANDBOX-API-KEY 请求头访问。
+# 该值必须与 fba 的 OPEN_SANDBOX_API_KEY 完全一致。
+api_key = "replace-with-a-long-random-api-key"
+# 对 create 请求 timeout 的上限。不会影响 timeout=None 的手动清理沙盒。
+max_sandbox_timeout_seconds = 86400
+
+[proxy]
+# WSL2 下建议 false，避免 Server 无法访问 Docker bridge 内部地址。
+resolve_internal = false
+
+[log]
+level = "INFO"
+
+[runtime]
+# 当前项目使用 Docker runtime。
+type = "docker"
+# 与已拉取的 execd 镜像标签保持一致。
+execd_image = "opensandbox/execd:v1.1.0"
+
+[storage]
+# 允许 bind mount 的宿主机路径白名单；空列表表示不限制，生产环境应收紧。
+allowed_host_paths = []
+volume_default_size = "1Gi"
+
+[docker]
+# 常见 Docker Desktop / WSL2 使用 bridge。
+network_mode = "bridge"
+# 每个沙盒需要 2-3 个动态端口，范围应满足并发沙盒数量。
+port_range_min = 40000
+port_range_max = 60000
+# 可选：将动态端口只发布到回环地址。
+# publish_host = "127.0.0.1"
+drop_capabilities = [
+  "AUDIT_WRITE",
+  "MKNOD",
+  "NET_ADMIN",
+  "NET_RAW",
+  "SYS_ADMIN",
+  "SYS_MODULE",
+  "SYS_PTRACE",
+  "SYS_TIME",
+  "SYS_TTY_CONFIG",
+]
+no_new_privileges = true
+apparmor_profile = ""
+pids_limit = 4096
+seccomp_profile = ""
+
+[ingress]
+# Docker runtime 使用 direct。
+mode = "direct"
+
+[egress]
+image = "opensandbox/egress:v1.1.7"
+mode = "dns"
+readiness_timeout_seconds = 30.0
+
+[store]
+# 单机推荐 SQLite。生产可改为 postgresql 并配置 [store.postgresql]。
+type = "sqlite"
+path = "~/.opensandbox/opensandbox.db"
+
+# 生产 PostgreSQL 示例：
+# [store]
+# type = "postgresql"
+# [store.postgresql]
+# min_pool_size = 1
+# max_pool_size = 10
+# connect_timeout_seconds = 5
+# pool_timeout_seconds = 5
+
+[renew_intent]
+# OpenSandbox 自身的 renew-on-access；默认关闭。
+enabled = false
+min_interval_seconds = 60
+
+# 注意：
+# 1. Docker runtime 不支持 lifecycle.idlePolicy 自动暂停，空闲暂停由 fba 插件实现。
+# 2. 不要为 fba 创建的沙盒设置有限 TTL；后端使用 timeout=None。
+# 3. 修改 api_key 后必须同步修改 fba 的 OPEN_SANDBOX_API_KEY 并重启后端。
+# 4. WSL2 下若出现 502，应优先确认 proxy.resolve_internal=false。

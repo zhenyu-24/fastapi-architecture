@@ -1,0 +1,11 @@
+[plugin]
+icon = 'mdi:file-upload-outline'
+summary = '统一文件上传下载管理'
+version = '0.0.1'
+description = '提供统一文件上传下载接口，支持多种上传类型、安全子目录、公开文件匿名下载和私有文件上传者校验，私有文件隔离存储'
+author = 'xiang'
+tags = ['storage']
+database = ['mysql', 'postgresql']
+
+[app]
+router = ['v1']

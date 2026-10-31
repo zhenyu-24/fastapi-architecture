@@ -1,0 +1,158 @@
+name: fba-simply
+
+# 根目录 .env 同时用于 Compose 变量替换和后端容器环境变量注入。
+# 默认启动：docker compose -f docker-simply-compose.yml up -d --build
+x-backend-env: &backend-env
+  env_file:
+    - ./.env
+
+services:
+  fba_postgres:
+    image: postgres:16-bookworm
+    container_name: fba_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_SCHEMA:-fba}
+      POSTGRES_USER: ${DATABASE_USER:-postgres}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-123456}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - fba_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  fba_redis:
+    image: redis:7-alpine
+    container_name: fba_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - fba_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # 后端只构建一次，API / Worker / Beat 共用镜像，各自在独立容器运行。
+  # 首次启动或更新代码：docker compose -f docker-simply-compose.yml up -d --build
+  # 单独启动 Worker / Beat 前，先执行 docker compose -f docker-simply-compose.yml build fba_server。
+  fba_server:
+    <<: *backend-env
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: fba_backend
+    image: fba_backend:simply
+    container_name: fba_server
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      FILE_STORAGE_ROOT: /fba/storage
+      FBA_SERVER_PORT: ${SERVER_INTERNAL_PORT:-8001}
+      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-fba}
+      DATABASE_USER: ${DATABASE_USER:-postgres}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-123456}
+    depends_on:
+      fba_postgres:
+        condition: service_healthy
+      fba_redis:
+        condition: service_healthy
+    ports:
+      - "${SERVER_PORT:-8001}:${SERVER_INTERNAL_PORT:-8001}"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:$${FBA_SERVER_PORT}/health\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    volumes:
+      - fba_storage:/fba/storage
+      - fba_static:/fba/backend/app/static
+    command: ["sh", "/fba/deploy/backend/docker-start.sh", "server"]
+
+  fba_celery_worker:
+    <<: *backend-env
+    image: fba_backend:simply
+    pull_policy: never
+    container_name: fba_celery_worker
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      FILE_STORAGE_ROOT: /fba/storage
+      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-fba}
+      DATABASE_USER: ${DATABASE_USER:-postgres}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-123456}
+    depends_on:
+      fba_server:
+        condition: service_healthy
+    volumes:
+      - fba_storage:/fba/storage
+    command: ["sh", "/fba/deploy/backend/docker-start.sh", "worker"]
+
+  fba_celery_beat:
+    <<: *backend-env
+    image: fba_backend:simply
+    pull_policy: never
+    container_name: fba_celery_beat
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      FILE_STORAGE_ROOT: /fba/storage
+      DATABASE_SCHEMA: ${DATABASE_SCHEMA:-fba}
+      DATABASE_USER: ${DATABASE_USER:-postgres}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD:-123456}
+    depends_on:
+      fba_server:
+        condition: service_healthy
+    volumes:
+      - fba_storage:/fba/storage
+    command: ["sh", "/fba/deploy/backend/docker-start.sh", "beat"]
+
+  # 可选：Nginx + 前端静态文件（默认不启用）。
+  # 1. 本机安装 Node.js（^22.18.0 或 ^24.0.0）和 pnpm（项目指定 11.7.0）。
+  # 2. 修改 front/fastapi-best-architecture-ui/apps/web-antdv-next/.env.production：
+  #    VITE_GLOB_API_URL=（留空，API 和 WebSocket 使用当前网站地址），VITE_BASE=/。
+  #    不要保留默认的 https://fba.wu-clan.site，否则请求会发往官方演示服务。
+  # 3. 在 front/fastapi-best-architecture-ui 目录执行：
+  #    pnpm install --frozen-lockfile
+  #    pnpm run build --filter=@vben/web-antdv-next
+  #    确认 apps/web-antdv-next/dist/index.html 已生成后再启动 Nginx。
+  # 4. 仅取消下方从 fba_nginx 到 volumes 挂载项的第一层 "# " 注释；
+  #    上面的说明保留注释。然后在本 Compose 文件所在目录执行：
+  #    docker compose -f docker-simply-compose.yml up -d fba_nginx
+  # 5. 浏览器访问 http://localhost:8080；可在根目录 .env 中设置 NGINX_PORT=80。
+  #    SERVER_INTERNAL_PORT 会同步用于后端监听和 Nginx 代理，不需要手改模板端口。
+  #    改端口后执行 docker compose -f docker-simply-compose.yml up -d fba_server fba_nginx。
+  # 6. 更新前端后重新构建 dist；修改 Nginx 模板后执行：
+  #    docker compose -f docker-simply-compose.yml restart fba_nginx
+  # 此示例使用 HTTP；正式 HTTPS 部署需另配证书和 TLS 监听。
+  # 使用独立配置模板，避免现有 nginx.conf 中的证书和 Flower 依赖。
+  # fba_nginx:
+  #   image: nginx:stable-alpine
+  #   container_name: fba_nginx
+  #   restart: unless-stopped
+  #   environment:
+  #     FBA_SERVER_PORT: ${SERVER_INTERNAL_PORT:-8001}
+  #     NGINX_ENVSUBST_FILTER: ^FBA_SERVER_PORT$
+  #   depends_on:
+  #     fba_server:
+  #       condition: service_healthy
+  #   ports:
+  #     - "${NGINX_PORT:-8080}:80"
+  #   volumes:
+  #     - ./front/fastapi-best-architecture-ui/apps/web-antdv-next/dist:/usr/share/nginx/html:ro
+  #     - ./deploy/backend/nginx-simply.conf.template:/etc/nginx/templates/default.conf.template:ro
+
+volumes:
+  fba_postgres:
+  fba_redis:
+  fba_storage:
+  fba_static:
